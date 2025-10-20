@@ -1,5 +1,6 @@
 """Live streaming interface for feeding real-time events into the viewer."""
 
+from __future__ import annotations
 
 from dataclasses import dataclass
 from queue import Queue

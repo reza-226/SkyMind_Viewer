@@ -1,4 +1,5 @@
-# src/skymind_viewer/replay.py
+src/skymind_viewer/replay.py
+from __future__ import annotations
 
 import json
 import bisect

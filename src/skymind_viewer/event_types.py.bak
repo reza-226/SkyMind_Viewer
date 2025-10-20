@@ -1,4 +1,5 @@
-# src/skymind_viewer/event_types.py
+src/skymind_viewer/event_types.py
+from __future__ import annotations
 
 from typing import Literal, TypedDict, Optional, List, Dict, Any
 

@@ -1,0 +1,5 @@
+# Minimal dependencies for the viewer and example producer
+pygame>=2.5
+
+# Optional: used by example producers (not required for pure viewing)
+simpy>=4.1

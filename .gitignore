@@ -1,1 +1,32 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
 .venv/
+venv/
+env/
+
+# Build & dist
+build/
+dist/
+*.egg-info/
+
+# Logs & temp
+*.log
+*.tmp
+*.swp
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Project-specific (در صورت نیاز تنظیم کن)
+runs/*.tmp
+runs/*.cache
+# اگر می‌خواهی نمونه‌های کوچک JSONL را نگه داری ولی ویدیوهای بزرگ را نه:
+# runs/*.mp4
+# runs/*.mov

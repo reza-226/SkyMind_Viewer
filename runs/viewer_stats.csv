@@ -1,0 +1,2 @@
+file,events,duration,errors,warnings,entities,tasks,entity_created,uav_pose,task_submit,task_assigned,task_completed,offload_decision,link_up,link_down,error_samples
+runs/demo.replay.jsonl,924,30.0,929,1,1,20,3,900,20,0,0,0,0,0,[0] entity_created requires string 'id'; [0] invalid kind 'None'; [1] entity_created requires string 'id'

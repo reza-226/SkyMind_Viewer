@@ -1,411 +1,610 @@
-# tools/hud_viewer_streamlit.py
-# HUD Viewer with robust CSV parser, slideshow timing, RTL/font injection, and KPI/plots
+# hud_viewer_streamlit.py
+# Streamlit HUD Viewer with:
+# - Persian/RTL UI
+# - Robust font system (Embedded > Local > System)
+# - Plotly template synced with Streamlit theme
+# - KPI, time-range filtering
+# - Charts with unique keys
+# - Slideshow view (single chart per slide) with auto-advance
+
+from __future__ import annotations
 
 import os
 import io
+import re
 import time
 import base64
-import json
-from typing import Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional
 
-import streamlit as st
-import pandas as pd
 import numpy as np
+import pandas as pd
+import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
+import plotly.io as pio
 
-# Try optional autorefresh helper
-try:
-    from streamlit_autorefresh import st_autorefresh  # pip install streamlit-autorefresh
-except Exception:
-    st_autorefresh = None
+# ------------------------------------------------------------------------------------
+# Page config
+# ------------------------------------------------------------------------------------
+st.set_page_config(
+    page_title="HUD Viewer",
+    page_icon="🛩️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-
-# ---------------------------
-# Font and RTL/CSS utilities
-# ---------------------------
-def _read_file_base64(path: str) -> Optional[str]:
+# ------------------------------------------------------------------------------------
+# Query params utils
+# ------------------------------------------------------------------------------------
+def get_query_params() -> Dict[str, List[str]]:
     try:
-        with open(path, "rb") as f:
-            return base64.b64encode(f.read()).decode("ascii")
+        return dict(st.query_params)
     except Exception:
-        return None
+        return st.experimental_get_query_params() or {}
 
-def _embedded_font_css(font_family: str = "IRANSans") -> Optional[str]:
+def set_query_params(**kwargs):
+    try:
+        st.query_params.clear()
+        for k, v in kwargs.items():
+            if v is None:
+                continue
+            st.query_params[k] = v
+    except Exception:
+        st.experimental_set_query_params(**{k: v for k, v in kwargs.items() if v is not None})
+
+# ------------------------------------------------------------------------------------
+# RTL + CSS
+# ------------------------------------------------------------------------------------
+def inject_rtl_css():
+    css = """
+    <style>
+    html, body, [data-testid="stAppViewContainer"] { direction: rtl !important; }
+    .st-emotion-cache-ue6h4q, .stText, .stMarkdown, .stMetric, .stSelectbox, .stSlider, .stButton { text-align: right !important; }
+    .js-plotly-plot .plotly .gtitle { direction: rtl; }
+    .js-plotly-plot .plotly .g-xtitle, .js-plotly-plot .plotly .g-ytitle { direction: rtl; }
+    </style>
     """
-    Try to import an embedded_fonts module and build a @font-face CSS block.
-    Accepts either tools.embedded_fonts or embedded_fonts.
-    """
-    mod = None
-    for name in ("tools.embedded_fonts", "embedded_fonts"):
-        try:
-            mod = __import__(name, fromlist=["*"])
-            break
-        except Exception:
-            pass
-    if not mod:
-        return None
+    st.markdown(css, unsafe_allow_html=True)
 
-    # Expect attributes like IRANSans_woff2 or a dict
-    woff2_b64 = None
-    if hasattr(mod, "FONTS"):
-        # FONTS may be dict: {"IRANSans": {"woff2": "..."}}
-        try:
-            woff2_b64 = mod.FONTS.get(font_family, {}).get("woff2")
-        except Exception:
-            woff2_b64 = None
-    if not woff2_b64 and hasattr(mod, f"{font_family}_woff2"):
-        woff2_b64 = getattr(mod, f"{font_family}_woff2")
+# ------------------------------------------------------------------------------------
+# Font management
+# ------------------------------------------------------------------------------------
+FONT_EXTS = (".woff2", ".woff", ".ttf", ".otf")
 
-    if not woff2_b64:
-        return None
+def _weight_from_name(name: str) -> int:
+    n = name.lower()
+    if "100" in n or "thin" in n: return 100
+    if "200" in n or "extralight" in n or "ultralight" in n: return 200
+    if "300" in n or "light" in n: return 300
+    if "500" in n or "medium" in n: return 500
+    if "600" in n or "semibold" in n or "demibold" in n: return 600
+    if "700" in n or "bold" in n: return 700
+    if "800" in n or "extrabold" in n or "ultrabold" in n: return 800
+    if "900" in n or "black" in n: return 900
+    return 400
 
-    css = f"""
-    @font-face {{
-      font-family: '{font_family}';
-      src: url(data:font/woff2;base64,{woff2_b64}) format('woff2');
-      font-weight: normal;
-      font-style: normal;
-      font-display: swap;
-    }}
-    """
-    return css
+def _variant_key(stem: str) -> Tuple[str, int, str]:
+    s = stem.lower()
+    italic = "italic" in s or "oblique" in s or s.endswith("i")
+    style = "italic" if italic else "normal"
+    w = _weight_from_name(stem)
+    label_map = {100:"Thin",200:"ExtraLight",300:"Light",400:"Regular",500:"Medium",600:"SemiBold",700:"Bold",800:"ExtraBold",900:"Black"}
+    label = label_map.get(w, "Regular") + ("-Italic" if italic else "")
+    return label, w, style
 
-def _local_font_css(font_family: str = "IRANSans") -> Optional[str]:
-    """
-    Read local assets/fonts/<font>.woff2 and build a CSS block.
-    """
-    candidate_paths = [
-        os.path.join("assets", "fonts", f"{font_family}.woff2"),
-        os.path.join("src", "skymind_viewer", "assets", "fonts", f"{font_family}.woff2"),
-    ]
-    for p in candidate_paths:
-        b64 = _read_file_base64(p)
-        if b64:
-            return f"""
-            @font-face {{
-              font-family: '{font_family}';
-              src: url(data:font/woff2;base64,{b64}) format('woff2');
-              font-weight: normal;
-              font-style: normal;
-              font-display: swap;
-            }}
-            """
-    return None
+def _encode_file_to_dataurl(path: Path) -> str:
+    fmt = path.suffix.lower().lstrip(".")
+    with open(path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("ascii")
+    return f"data:font/{fmt};base64,{b64}"
 
-def inject_global_css(lang: str = "fa", font_family: str = "IRANSans"):
-    """
-    Injects RTL + font CSS. Priority: embedded > local. Falls back to sans-serif if not found.
-    """
-    font_css = _embedded_font_css(font_family) or _local_font_css(font_family) or ""
-    direction = "rtl" if lang.lower().startswith(("fa", "ar")) else "ltr"
-    family = font_family if font_css else "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif"
+def _collect_local_fonts() -> Dict[str, Dict[str, Dict[str, str]]]:
+    search_dirs: List[Path] = []
+    env_dir = os.getenv("SKYMIND_FONT_DIR")
+    if env_dir:
+        for part in env_dir.split(os.pathsep):
+            p = Path(part.strip())
+            if p.exists():
+                search_dirs.append(p)
+    for d in ["assets/fonts", "fonts", "static/fonts"]:
+        p = Path(d)
+        if p.exists():
+            search_dirs.append(p)
 
-    base_css = f"""
-    html, body, [class*="css"] {{
-      direction: {direction};
-      font-family: '{family}';
-      -webkit-font-smoothing: antialiased;
-      -moz-osx-font-smoothing: grayscale;
-    }}
-    .stPlotlyChart {{
-      direction: ltr; /* keep plots LTR to avoid axis inversion */
-    }}
-    .kpi .stMetric {{
-      direction: {direction};
-    }}
-    """
-    st.markdown(f"<style>{font_css}\n{base_css}</style>", unsafe_allow_html=True)
+    result: Dict[str, Dict[str, Dict[str, str]]] = {}
+    for root in search_dirs:
+        subs = [d for d in root.iterdir() if d.is_dir()]
+        families = subs if subs else [root]
 
-
-# ---------------------------
-# Slideshow timing helper
-# ---------------------------
-def slideshow_tick(interval_ms: int, limit: Optional[int] = None, key: str = "slideshow_autorefresh"):
-    """
-    If streamlit-autorefresh is installed, use it. Otherwise, emulate with st.rerun() and session_state timestamps.
-    """
-    if st_autorefresh:
-        st_autorefresh(interval=interval_ms, limit=limit, key=key)
-        return
-
-    # Fallback: manual clock + st.rerun
-    now = time.time()
-    last_key = f"{key}_last"
-    if last_key not in st.session_state:
-        st.session_state[last_key] = now
-        return
-    if (now - st.session_state[last_key]) * 1000.0 >= max(100, interval_ms):
-        st.session_state[last_key] = now
-        # Trigger rerun
-        try:
-            st.rerun()
-        except Exception:
-            # older versions
-            st.experimental_rerun()
-
-
-# ---------------------------
-# Robust CSV/JSONL parsing
-# ---------------------------
-def read_table_auto(path: str) -> pd.DataFrame:
-    """
-    Robust reader for telemetry logs:
-    - Supports CSV with delimiters ',', ';', '\t' and whitespace-separated.
-    - Supports JSONL (one JSON object per line).
-    - Cleans column names and tries to fix single-column cases by splitting.
-    """
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"Input path not found: {path}")
-
-    ext = os.path.splitext(path)[1].lower()
-    if ext in (".jsonl", ".ndjson", ".json"):
-        # JSONL or NDJSON: each line a JSON object
-        rows = []
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
+        for fam_dir in families:
+            fam = fam_dir.name
+            files = [p for p in fam_dir.rglob("*") if p.is_file() and p.suffix.lower() in FONT_EXTS]
+            if not files:
+                continue
+            for p in files:
+                key, weight, style = _variant_key(p.stem)
+                fmt = p.suffix.lower().lstrip(".")
                 try:
-                    obj = json.loads(line)
-                    rows.append(obj)
+                    dataurl = _encode_file_to_dataurl(p)
                 except Exception:
-                    # try relaxed parsing for non-JSON lines
-                    pass
-        df = pd.DataFrame(rows)
-    else:
-        # CSV-like
-        tried = []
+                    continue
+                result.setdefault(fam, {})
+                result[fam].setdefault(key, {})
+                result[fam][key][fmt] = dataurl
+                result[fam][key].setdefault("_meta_weight", str(weight))
+                result[fam][key].setdefault("_meta_style", style)
+    return result
 
-        def clean_df(df0: pd.DataFrame) -> pd.DataFrame:
-            df = df0.copy()
-            df.columns = [str(c).strip().lower().replace(".", "_").replace("-", "_") for c in df.columns]
-            return df
+def _load_embedded_fonts() -> Dict[str, Dict[str, Dict[str, str]]]:
+    try:
+        from tools.embedded_fonts import EMBEDDED_FONTS  # type: ignore
+        enriched: Dict[str, Dict[str, Dict[str, str]]] = {}
+        for fam, variants in EMBEDDED_FONTS.items():
+            enriched[fam] = {}
+            for vkey, fmts in variants.items():
+                weight = 400
+                style = "italic" if "italic" in vkey.lower() else "normal"
+                m = re.search(r"(thin|100|extralight|200|light|300|regular|400|medium|500|semibold|600|bold|700|extrabold|800|black|900)", vkey, re.I)
+                if m:
+                    weight = _weight_from_name(m.group(1))
+                enriched[fam][vkey] = dict(fmts)
+                enriched[fam][vkey]["_meta_weight"] = str(weight)
+                enriched[fam][vkey]["_meta_style"] = style
+        return enriched
+    except Exception:
+        return {}
 
-        # Try common delimiters
-        for sep in [",", ";", "\t"]:
+def build_font_css(family: str, source: str, fonts_map: Dict[str, Dict[str, Dict[str, str]]]) -> str:
+    if family not in fonts_map:
+        return ""
+    rules = []
+    for vkey, fmts in fonts_map[family].items():
+        if not isinstance(fmts, dict):
+            continue
+        weight = fmts.get("_meta_weight", "400")
+        style = fmts.get("_meta_style", "normal")
+        src_parts = []
+        for fmt in ["woff2", "woff", "ttf", "otf"]:
+            if fmt in fmts:
+                src_parts.append(f"url('{fmts[fmt]}') format('{fmt}')")
+        if not src_parts:
+            continue
+        rule = f"""
+        @font-face {{
+            font-family: '{family}';
+            src: {", ".join(src_parts)};
+            font-weight: {weight};
+            font-style: {style};
+            font-display: swap;
+        }}
+        """
+        rules.append(rule)
+
+    body_css = f"""
+    :root {{ --app-font: '{family}', 'Vazirmatn','IRANSans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'Liberation Sans', sans-serif; }}
+    html, body, [data-testid="stAppViewContainer"] * {{
+        font-family: var(--app-font) !important;
+        letter-spacing: 0.1px;
+    }}
+    """
+    return "<style>\n" + "\n".join(rules) + "\n" + body_css + "\n</style>"
+
+def apply_fonts() -> Tuple[str, str]:
+    qp = get_query_params()
+    url_font = None
+    if "font" in qp and qp["font"]:
+        url_font = qp["font"][0] if isinstance(qp["font"], list) else qp["font"]
+
+    embedded = _load_embedded_fonts()
+    local = _collect_local_fonts()
+
+    candidate_family = url_font
+
+    if candidate_family and candidate_family in embedded:
+        st.markdown(build_font_css(candidate_family, "Embedded", embedded), unsafe_allow_html=True)
+        return candidate_family, "Embedded"
+    if candidate_family and candidate_family in local:
+        st.markdown(build_font_css(candidate_family, "Local", local), unsafe_allow_html=True)
+        return candidate_family, "Local"
+
+    if embedded:
+        fam = sorted(embedded.keys())[0]
+        st.markdown(build_font_css(fam, "Embedded", embedded), unsafe_allow_html=True)
+        return fam, "Embedded"
+    if local:
+        fam = sorted(local.keys())[0]
+        st.markdown(build_font_css(fam, "Local", local), unsafe_allow_html=True)
+        return fam, "Local"
+
+    st.markdown("""
+    <style>
+    :root{ --app-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'Liberation Sans', sans-serif; }
+    html, body, [data-testid="stAppViewContainer"] * { font-family: var(--app-font) !important; }
+    </style>
+    """, unsafe_allow_html=True)
+    return "System", "System"
+
+# ------------------------------------------------------------------------------------
+# Plotly template synced with Streamlit theme
+# ------------------------------------------------------------------------------------
+def get_theme_opt(key: str, default: Optional[str] = None) -> Optional[str]:
+    try:
+        return st.get_option(f"theme.{key}") or default
+    except Exception:
+        return default
+
+def install_plotly_template(font_family: str):
+    primary = get_theme_opt("primaryColor", "#2c7be5")
+    bg = get_theme_opt("backgroundColor", "white")
+    text = get_theme_opt("textColor", "#31333F")
+    grid = "#E6E6E6"
+
+    template = go.layout.Template(
+        layout=go.Layout(
+            font=dict(family=font_family, size=13, color=text),
+            paper_bgcolor=bg,
+            plot_bgcolor=bg,
+            colorway=[primary, "#00A7B3", "#FF7A59", "#7C69EF", "#2EC4B6", "#FF9F1C", "#E71D36", "#8D99AE"],
+            xaxis=dict(gridcolor=grid, zerolinecolor=grid, linecolor="#C8C8C8", ticks="outside"),
+            yaxis=dict(gridcolor=grid, zerolinecolor=grid, linecolor="#C8C8C8", ticks="outside"),
+            legend=dict(bgcolor=bg, orientation="h", yanchor="bottom", y=1.02, x=0),
+            margin=dict(l=40, r=20, t=50, b=40),
+        )
+    )
+    pio.templates["skymind"] = template
+    pio.templates.default = "plotly_white+skymind"
+
+# ------------------------------------------------------------------------------------
+# Slideshow auto-refresh counter
+# ------------------------------------------------------------------------------------
+def slideshow_counter(interval_sec: float, key: str = "slideshow_timer") -> int:
+    """
+    Returns an incrementing counter at the given interval. Uses streamlit-autorefresh
+    if available; otherwise falls back to st.rerun on a timer.
+    """
+    try:
+        from streamlit_autorefresh import st_autorefresh  # type: ignore
+        cnt = st_autorefresh(interval=int(interval_sec * 1000), key=key)
+        return int(cnt or 0)
+    except Exception:
+        now = time.time()
+        next_key = f"{key}_next"
+        count_key = f"{key}_count"
+        nxt = st.session_state.get(next_key, now + interval_sec)
+        if now >= nxt:
+            st.session_state[next_key] = now + interval_sec
+            st.session_state[count_key] = st.session_state.get(count_key, 0) + 1
             try:
-                df = pd.read_csv(path, sep=sep, engine="python")
-                df = clean_df(df)
-                tried.append(sep)
-                if df.shape[1] > 1:
-                    break
+                st.rerun()
+            except Exception:
+                st.experimental_rerun()
+        return int(st.session_state.get(count_key, 0))
+
+# ------------------------------------------------------------------------------------
+# Data helpers
+# ------------------------------------------------------------------------------------
+TIME_COL_CANDIDATES = ["time", "timestamp", "datetime", "date", "t", "Time", "Timestamp", "DateTime"]
+
+def parse_csv(file: io.BytesIO) -> pd.DataFrame:
+    """
+    Robust CSV reader:
+    - Tries multiple encodings.
+    - Lets pandas infer the separator.
+    - If still single-column, tries a set of separators and picks the best (max columns).
+    - Falls back to regex [,\s;|]+ to handle mixed comma/space.
+    """
+    raw = file.read()
+    text = None
+    for enc in ("utf-8", "utf-8-sig", "cp1256", "latin1"):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if text is None:
+        text = raw.decode("utf-8", errors="ignore")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    # 1) Let pandas infer sep
+    buf = io.StringIO(text)
+    df = pd.DataFrame()
+    try:
+        df = pd.read_csv(buf, sep=None, engine="python")
+    except Exception:
+        pass
+
+    # 2) If single column, try candidates and pick the widest
+    if df.empty or df.shape[1] == 1:
+        best_df, best_cols = None, 0
+        for sep in [",", ";", "\t", "|", r"\s+", r"[,\s;|]+"]:
+            try:
+                trial = pd.read_csv(io.StringIO(text), sep=sep, engine="python")
+                if trial.shape[1] > best_cols:
+                    best_df, best_cols = trial, trial.shape[1]
             except Exception:
                 continue
-        else:
-            # whitespace-delimited
+        if best_df is not None:
+            df = best_df
+
+    # 3) If header itself looks concatenated, re-parse with regex
+    if df.shape[1] == 1 and (("," in df.columns[0]) or (" " in df.columns[0])):
+        df = pd.read_csv(io.StringIO(text), sep=r"[,\s;|]+", engine="python")
+
+    # Clean headers
+    df.columns = [str(c).strip() for c in df.columns]
+
+    # Convert object-like numerics
+    for c in list(df.columns):
+        s = df[c]
+        if s.dtype == object:
             try:
-                df = pd.read_csv(path, delim_whitespace=True, engine="python")
-                df = clean_df(df)
-                tried.append("whitespace")
-            except Exception as e:
-                raise RuntimeError(f"Failed to parse CSV. Tried {tried}. Error: {e}")
-
-        # If still single-column, attempt smart split
-        if df.shape[1] == 1:
-            col = df.columns[0]
-            # Split each row by any runs of whitespace
-            split_rows = df[col].astype(str).str.strip().str.split(r"\s+", regex=True)
-            max_len = split_rows.map(len).max()
-            expanded = pd.DataFrame(split_rows.tolist())
-            # infer headers if first row looks like header-like tokens
-            header_candidates = expanded.iloc[0].tolist()
-            header_ok = all(isinstance(x, str) and not x.isdigit() for x in header_candidates)
-            if header_ok:
-                expanded = expanded.iloc[1:].reset_index(drop=True)
-                expanded.columns = [str(x).strip().lower() for x in header_candidates]
-            else:
-                expanded.columns = [f"col_{i}" for i in range(max_len)]
-            df = expanded
-
-        # final clean
-        df = df.replace({np.nan: None})
-        df.columns = [c.strip().lower() for c in df.columns]
+                s2 = s.astype(str).str.replace("%", "", regex=False).str.replace("٪", "", regex=False)
+                df[c] = pd.to_numeric(s2, errors="ignore")
+            except Exception:
+                pass
     return df
 
+def ensure_time(df: pd.DataFrame) -> Tuple[pd.DataFrame, Optional[str]]:
+    col = None
+    for c in df.columns:
+        if c in TIME_COL_CANDIDATES or c.lower() in [x.lower() for x in TIME_COL_CANDIDATES]:
+            col = c
+            break
+    if col is None:
+        for c in df.columns:
+            if re.search(r"(time|sec|millis|ms)", c, re.I):
+                col = c
+                break
+    if col is None:
+        return df, None
 
-def pick_columns(df: pd.DataFrame) -> Dict[str, Optional[str]]:
+    s = df[col]
+    if pd.api.types.is_numeric_dtype(s):
+        base = pd.to_datetime("1970-01-01")
+        try:
+            if s.max() > 1e12:
+                t = pd.to_datetime(s, unit="ms")
+            elif s.max() > 1e9:
+                t = pd.to_datetime(s, unit="s")
+            else:
+                t = base + pd.to_timedelta(s - s.min(), unit="s")
+        except Exception:
+            t = base + pd.to_timedelta(np.arange(len(s)), unit="s")
+        df = df.copy()
+        df["__time__"] = t
+        return df, "__time__"
+    else:
+        try:
+            t = pd.to_datetime(s, errors="coerce")
+            if t.notna().mean() > 0.7:
+                df = df.copy()
+                df["__time__"] = t
+                return df, "__time__"
+        except Exception:
+            pass
+    return df, None
+
+def pick_columns(df: pd.DataFrame) -> Dict[str, str]:
     """
-    Map dataframe columns to semantic roles.
+    Map expected signals to available columns.
     """
-    cols = set(df.columns)
-
-    def find_any(cands: List[str]) -> Optional[str]:
-        for c in cands:
-            if c in cols:
-                return c
-        # try fuzzy: remove common suffixes
-        for c in cols:
-            cn = c.replace("-", "_")
-            for cand in cands:
-                if cand in cn:
-                    return c
-        return None
-
-    mapping = {
-        "time": find_any(["timestamp", "time", "t", "ts"]),
-        "x": find_any(["pos_x", "x", "lon", "longitude"]),
-        "y": find_any(["pos_y", "y", "lat", "latitude"]),
-        "z": find_any(["pos_z", "z", "alt", "altitude", "height"]),
-        "speed": find_any(["speed_mps", "speed", "vel", "velocity", "v"]),
-        "battery": find_any(["battery_pct", "battery_percent", "battery", "soc"]),
+    colmap: Dict[str, str] = {}
+    name_pairs = {
+        "altitude": [r"alt", r"altitude", r"height", r"asl", r"baro", r"pos_z", r"\bz\b"],
+        "speed": [r"speed", r"spd", r"airspeed", r"gs", r"velocity", r"speed_mps"],
+        "pitch": [r"pitch", r"theta"],
+        "roll": [r"roll", r"phi"],
+        "yaw": [r"yaw", r"heading", r"psi", r"hdg"],
+        "battery": [r"battery", r"batt", r"battery_pct", r"soc"],
     }
-    return mapping
+    for alias, patterns in name_pairs.items():
+        for ptn in patterns:
+            for c in df.columns:
+                if re.fullmatch(ptn, c, re.I) or re.search(rf"\b{ptn}\b", c, re.I):
+                    if pd.api.types.is_numeric_dtype(df[c]) or pd.api.types.is_integer_dtype(df[c]) or pd.api.types.is_float_dtype(df[c]):
+                        colmap[alias] = c
+                        break
+            if alias in colmap:
+                break
+    return colmap
 
+# ------------------------------------------------------------------------------------
+# UI setup
+# ------------------------------------------------------------------------------------
+inject_rtl_css()
+font_family, font_src = apply_fonts()
+install_plotly_template(font_family)
 
-# ---------------------------
-# HUD rendering
-# ---------------------------
-def render_kpis(df: pd.DataFrame, colmap: Dict[str, Optional[str]]):
-    st.subheader("شاخص‌های کلیدی (KPI)")
-    kpi_cols = st.columns(4)
-    # Speed
-    if colmap["speed"] and colmap["speed"] in df.columns:
-        sp = pd.to_numeric(df[colmap["speed"]], errors="coerce")
-        kpi_cols[0].metric("سرعت (m/s)", f"{np.nanmean(sp):.2f}")
-    else:
-        kpi_cols[0].metric("سرعت (m/s)", "—")
-    # Altitude
-    if colmap["z"] and colmap["z"] in df.columns:
-        alt = pd.to_numeric(df[colmap["z"]], errors="coerce")
-        kpi_cols[1].metric("ارتفاع (m)", f"{np.nanmean(alt):.1f}")
-    else:
-        kpi_cols[1].metric("ارتفاع (m)", "—")
-    # Battery
-    if colmap["battery"] and colmap["battery"] in df.columns:
-        bat = pd.to_numeric(df[colmap["battery"]], errors="coerce")
-        kpi_cols[2].metric("باتری (%)", f"{np.nanmean(bat):.1f}")
-    else:
-        kpi_cols[2].metric("باتری (%)", "—")
-    # Samples
-    kpi_cols[3].metric("نمونه‌ها", f"{len(df)}")
+st.sidebar.markdown("### تنظیمات نمایش")
+st.sidebar.caption(f"fonts: {font_family} ({font_src})")
 
+uploaded = st.sidebar.file_uploader("فایل CSV را اینجا بیندازید", type=["csv"], accept_multiple_files=False)
 
-def render_plots(df: pd.DataFrame, colmap: Dict[str, Optional[str]]):
-    st.subheader("نمودارها")
-    # Time series: speed and battery if available
-    ts_cols = st.columns(2)
-    time_col = colmap["time"]
+view_mode = st.sidebar.radio("حالت نمایش نمودار", options=["شبکه‌ای", "اسلایدشو"], index=1, help="در حالت اسلایدشو، هر بار یک نمودار نمایش داده می‌شود.")
 
-    def line_plot(y_col: Optional[str], title: str):
-        if not y_col or y_col not in df.columns:
-            st.info(f"{title}: ستون یافت نشد.")
-            return
-        y = pd.to_numeric(df[y_col], errors="coerce")
-        if time_col and time_col in df.columns:
-            x = df[time_col]
-        else:
-            x = np.arange(len(y))
-        fig = px.line(x=x, y=y, labels={"x": "زمان/اندیس", "y": title}, title=title, template="plotly_white")
-        st.plotly_chart(fig, use_container_width=True, theme="streamlit")
+# Slideshow controls
+pause = st.sidebar.toggle("توقف اسلایدشو", value=False)
+interval_sec = st.sidebar.slider("فاصله زمانی اسلایدها (ثانیه)", min_value=2, max_value=10, value=3, step=1)
 
-    with ts_cols[0]:
-        line_plot(colmap["speed"], "سرعت (m/s)")
-    with ts_cols[1]:
-        line_plot(colmap["battery"], "باتری (%)")
+st.sidebar.markdown("---")
+st.sidebar.markdown("### KPI")
+kpi_count = st.sidebar.selectbox("تعداد KPI در سطر", options=[1, 2, 3, 4], index=2)
 
-    # 2D trajectory (X-Y)
-    st.subheader("مسیر X-Y")
-    if colmap["x"] and colmap["y"] and (colmap["x"] in df.columns) and (colmap["y"] in df.columns):
-        x = pd.to_numeric(df[colmap["x"]], errors="coerce")
-        y = pd.to_numeric(df[colmap["y"]], errors="coerce")
-        fig2 = go.Figure()
-        fig2.add_trace(go.Scatter(x=x, y=y, mode="lines+markers", name="trajectory"))
-        fig2.update_layout(title="مسیر دوبعدی", xaxis_title="X/Lon", yaxis_title="Y/Lat", template="plotly_white")
-        st.plotly_chart(fig2, use_container_width=True, theme="streamlit")
-    else:
-        st.info("مسیر دوبعدی: ستون‌های X/Y یافت نشد.")
+# ------------------------------------------------------------------------------------
+# Main area
+# ------------------------------------------------------------------------------------
+st.title("نمایشگر HUD / تحلیل پرواز")
 
+if uploaded is None:
+    st.info("برای شروع، یک فایل CSV بارگذاری کنید.")
+    st.stop()
 
-# ---------------------------
-# Slideshow controller
-# ---------------------------
-def run_slideshow(df: pd.DataFrame, interval_ms: int = 1500, page_size: int = 50):
-    """
-    Paginate the dataframe and move forward periodically.
-    """
-    if "slide_idx" not in st.session_state:
-        st.session_state["slide_idx"] = 0
+try:
+    df = parse_csv(uploaded)
+except Exception as e:
+    st.error(f"خواندن فایل ناموفق بود: {e}")
+    st.stop()
 
-    total_pages = max(1, int(np.ceil(len(df) / max(1, page_size))))
-    # Controls
-    c1, c2, c3 = st.columns([1, 2, 1])
-    with c1:
-        if st.button("⟵ قبلی", use_container_width=True):
-            st.session_state["slide_idx"] = max(0, st.session_state["slide_idx"] - 1)
-    with c2:
-        st.write(f"صفحه {st.session_state['slide_idx']+1} از {total_pages}")
-    with c3:
-        if st.button("بعدی ⟶", use_container_width=True):
-            st.session_state["slide_idx"] = min(total_pages - 1, st.session_state["slide_idx"] + 1)
+# Normalize column names
+df.columns = [str(c).strip() for c in df.columns]
 
-    # Autoplay toggle
-    autoplay = st.checkbox("پخش خودکار (Slideshow)", value=False)
-    if autoplay:
-        slideshow_tick(interval_ms=interval_ms, key="hud_slideshow")
+# Detect time
+df, time_col = ensure_time(df)
 
-    # Slice current window
-    idx = st.session_state["slide_idx"]
-    start = idx * page_size
-    end = min(len(df), start + page_size)
-    st.write(f"نمایش ردیف‌های {start} تا {end}")
-    st.dataframe(df.iloc[start:end], use_container_width=True)
+# Determine numeric columns (after possible coercion)
+num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+if not num_cols:
+    st.error("ستون عددی در فایل یافت نشد.")
+    with st.expander("پیش‌نمایش فایل"):
+        st.dataframe(df.head(200))
+    st.stop()
 
+# Time filter
+if time_col is not None:
+    tmin, tmax = df[time_col].min(), df[time_col].max()
+    tstart, tend = st.slider(
+        "بازه زمانی",
+        min_value=pd.to_datetime(tmin).to_pydatetime(),
+        max_value=pd.to_datetime(tmax).to_pydatetime(),
+        value=(pd.to_datetime(tmin).to_pydatetime(), pd.to_datetime(tmax).to_pydatetime()),
+        format="YYYY-MM-DD HH:mm:ss",
+    )
+    mask = (df[time_col] >= pd.to_datetime(tstart)) & (df[time_col] <= pd.to_datetime(tend))
+    dff = df.loc[mask].reset_index(drop=True)
+else:
+    st.warning("ستون زمانی شناسایی نشد؛ تمام داده‌ها نمایش داده می‌شود.")
+    dff = df.copy()
 
-# ---------------------------
-# App main
-# ---------------------------
-def main():
-    st.set_page_config(page_title="SkyMind HUD Viewer", layout="wide")
-    # Sidebar settings
-    lang = st.sidebar.selectbox("زبان", options=["fa", "en"], index=0)
-    font_family = st.sidebar.text_input("فونت", value="IRANSans")
-    inject_global_css(lang=lang, font_family=font_family)
+# Column mapping
+colmap = pick_columns(dff)
 
-    st.title("HUD Viewer (Phase 7)")
-    # Parse CLI args: streamlit passes everything after '--' to sys.argv
-    replay_path = st.sidebar.text_input("مسیر فایل Replay/CSV/JSONL", value="data/replays/hud_demo_v0.2.2.jsonl")
-    page_size = st.sidebar.number_input("اندازه صفحه (Slideshow)", min_value=10, max_value=500, value=50, step=10)
-    interval_ms = st.sidebar.number_input("فاصله زمانی اسلاید (ms)", min_value=250, max_value=10000, value=1500, step=250)
-
-    # Allow file upload too
-    upload = st.file_uploader("آپلود فایل (CSV/JSONL)", type=["csv", "jsonl", "ndjson", "json"])
-    df = None
-
+# KPIs
+def _fmt(v):
     try:
-        if upload is not None:
-            # Read uploaded file
-            tmp = io.BytesIO(upload.read())
-            # Save to temporary path for uniform parsing
-            tmp_path = os.path.join(st.session_state.get("_tmp_dir", "."), f"__upload__{upload.name}")
-            with open(tmp_path, "wb") as f:
-                f.write(tmp.getbuffer())
-            df = read_table_auto(tmp_path)
-            os.remove(tmp_path)
-        else:
-            df = read_table_auto(replay_path)
-    except Exception as e:
-        st.error(f"خطا در بارگذاری/پارس فایل: {e}")
-        st.stop()
+        return f"{float(v):,.2f}"
+    except Exception:
+        return "-"
 
-    if df is None or df.empty:
-        st.warning("فایل خالی است یا داده‌ای یافت نشد.")
-        st.stop()
+kpi_items = []
+if "speed" in colmap:
+    kpi_items.append(("سرعت", dff[colmap["speed"]].iloc[-1], "m/s"))
+if "altitude" in colmap:
+    kpi_items.append(("ارتفاع", dff[colmap["altitude"]].iloc[-1], "m"))
+if "battery" in colmap:
+    kpi_items.append(("باتری", dff[colmap["battery"]].iloc[-1], "%"))
+if time_col is not None and len(dff) > 1:
+    duration = (dff[time_col].iloc[-1] - dff[time_col].iloc[0])
+    seconds = int(getattr(duration, "total_seconds", lambda: np.nan)() or 0)
+    kpi_items.append(("مدت بازه", f"{seconds}", "s"))
+kpi_items.append(("تعداد نمونه", len(dff), ""))
 
-    # Column mapping
-    colmap = pick_columns(df)
+cols = st.columns(kpi_count)
+for i, (label, value, unit) in enumerate(kpi_items):
+    cols[i % kpi_count].metric(label=label, value=f"{_fmt(value)} {unit}".strip())
 
-    # KPIs and plots
-    render_kpis(df, colmap)
-    render_plots(df, colmap)
+st.markdown("---")
 
-    # Slideshow paginated view
-    st.markdown("---")
-    run_slideshow(df, interval_ms=interval_ms, page_size=page_size)
+# Chart registry and draw function
+def line_chart(dfX: pd.DataFrame, ycol: str, title: str, key: str):
+    if time_col is not None:
+        fig = px.line(dfX, x=time_col, y=ycol, title=title)
+    else:
+        fig = px.line(dfX.reset_index(), x="index", y=ycol, title=title, labels={"index": "Index"})
+    st.plotly_chart(fig, use_container_width=True, key=key)
 
-    st.caption("Tips: اگر streamlit-autorefresh نصب نباشد، از st.rerun برای شبیه‌سازی زمان‌بندی استفاده می‌شود.")
+# Build available charts list based on colmap
+available_charts: List[Tuple[str, str, str]] = []  # (alias, ycol, title)
+if "altitude" in colmap:
+    available_charts.append(("altitude", colmap["altitude"], "ارتفاع"))
+if "speed" in colmap:
+    available_charts.append(("speed", colmap["speed"], "سرعت"))
+if "pitch" in colmap:
+    available_charts.append(("pitch", colmap["pitch"], "گام (Pitch)"))
+if "roll" in colmap:
+    available_charts.append(("roll", colmap["roll"], "رُل (Roll)"))
+if "yaw" in colmap:
+    available_charts.append(("yaw", colmap["yaw"], "یاو/سربر (Yaw/Heading)"))
+if "battery" in colmap:
+    available_charts.append(("battery", colmap["battery"], "شارژ باتری (%)"))
 
+if not available_charts:
+    st.warning("ستون‌های استاندارد یافت نشد؛ نمایش عمومی ستون‌های عددی.")
+    generic_cols = num_cols[:4]
+    grid = st.columns(2)
+    for i, c in enumerate(generic_cols):
+        with grid[i % 2]:
+            line_chart(dff, c, c, key=f"chart_generic_{i}")
+    with st.expander("نمایش نمونه‌ای از داده‌ها"):
+        st.dataframe(dff.head(200))
+    st.stop()
 
-if __name__ == "__main__":
-    main()
+# Sidebar: choose chart sequence
+default_order = [a for a, _, _ in available_charts]
+seq_selected = st.sidebar.multiselect(
+    "ترتیب/انتخاب نمودارها برای اسلایدشو",
+    options=default_order,
+    default=default_order,
+    help="اولویت اجرای اسلایدها بر اساس ترتیب انتخاب."
+)
+
+# Map selection back to full chart tuple list preserving order
+chart_sequence: List[Tuple[str, str, str]] = [t for t in available_charts if t[0] in seq_selected]
+
+# Render based on mode
+if view_mode == "شبکه‌ای":
+    # Show charts in grid (2 columns)
+    c1, c2 = st.columns(2)
+    for idx, (alias, ycol, title) in enumerate(chart_sequence):
+        container = c1 if idx % 2 == 0 else c2
+        with container:
+            line_chart(dff, ycol, title, key=f"chart_{alias}")
+else:
+    # Slideshow: one chart per render
+    total = len(chart_sequence)
+    if total == 0:
+        st.info("هیچ نموداری برای اسلایدشو انتخاب نشده است.")
+    else:
+        # Maintain slide index in session state
+        if "slide_idx" not in st.session_state:
+            st.session_state["slide_idx"] = 0
+
+        # Auto-advance if not paused
+        if not pause:
+            cnt = slideshow_counter(interval_sec=interval_sec, key="slideshow_timer")
+            st.session_state["slide_idx"] = cnt % total
+
+        slide_idx = st.session_state["slide_idx"] % total
+        alias, ycol, title = chart_sequence[slide_idx]
+
+        # Header with status
+        st.subheader(f"اسلاید {slide_idx + 1} از {total} — {title}")
+
+        # Render the single chart
+        line_chart(dff, ycol, title, key=f"chart_{alias}")
+
+        # Controls: Prev / Next
+        cc1, cc2, cc3 = st.columns(3)
+        with cc1:
+            if st.button("◀️ قبلی", use_container_width=True):
+                st.session_state["slide_idx"] = (slide_idx - 1) % total
+                st.rerun()
+        with cc2:
+            st.button("⏸️" + (" ادامه" if not pause else " ادامه"), disabled=True, use_container_width=True)
+        with cc3:
+            if st.button("بعدی ▶️", use_container_width=True):
+                st.session_state["slide_idx"] = (slide_idx + 1) % total
+                st.rerun()
+
+        # Small caption
+        st.caption(
+            f"فاصله زمانی اسلایدها: {interval_sec} ثانیه | {'در حال اجرا' if not pause else 'متوقف'} | "
+            f"برای تغییر ترتیب اسلایدها از سایدبار استفاده کنید."
+        )
+
+with st.expander("نمایش نمونه‌ای از داده‌ها"):
+    st.dataframe(dff.head(200))
+
+st.caption(
+    "نکته: اگر streamlit-autorefresh نصب نباشد، از رفرش داخلی استفاده می‌شود. برای تغییر فونت از ?font=IRANSans استفاده کنید."
+)

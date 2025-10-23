@@ -31,3 +31,5 @@ runs/*.cache
 # runs/*.mp4
 # runs/*.mov
 data/replays/*.csv
+data/replays/
+streamlit/

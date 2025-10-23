@@ -30,3 +30,4 @@ runs/*.cache
 # اگر می‌خواهی نمونه‌های کوچک JSONL را نگه داری ولی ویدیوهای بزرگ را نه:
 # runs/*.mp4
 # runs/*.mov
+data/replays/*.csv

@@ -1,0 +1,29 @@
+flowchart TD
+  %% Mermaid->PNG Microservice Flow (ASCII-safe)
+  Client([Client])
+  Post[POST /render]
+  MW[Express JSON Middleware\n(parse body)\nJSON: { code, format in {png, svg, pdf} }]
+  Val{Valid input?\nMermaid code and format ok}
+  Err[HTTP 400 Response\n{ error: Invalid input }]
+  EndBad((End))
+
+  Mkdir[Create temp folder\nmkdtemp(...)]
+  Write[Write Mermaid file\nwriteFile(inFile, code)]
+  Exec[Run CLI mmdc\nexec(mmdc -i diagram.mmd ...)]
+  Read[Read output file\nreadFile(outFile)]
+  Mime[Set Content-Type header\n(based on format)]
+  Send[Send binary image to client]
+  Clean[Cleanup temp files\nrm -rf tmpDir]
+  EndOk((End))
+
+  Health[GET /health\nReturns { ok: true }]
+  Start([Start])
+  Init[Server init\napp.listen(PORT || 8080)]
+  Running((Mermaid render service on 8080))
+
+  Client --> Post --> MW --> Val
+  Val -- No --> Err --> EndBad
+  Val -- Yes --> Mkdir --> Write --> Exec --> Read --> Mime --> Send --> Clean --> EndOk
+
+  MW -.-> Health
+  Start --> Init --> Running --> MW

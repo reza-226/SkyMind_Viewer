@@ -33,3 +33,6 @@ runs/*.cache
 data/replays/*.csv
 data/replays/
 streamlit/
+.venv/
+__pycache__/
+.pytest_cache/

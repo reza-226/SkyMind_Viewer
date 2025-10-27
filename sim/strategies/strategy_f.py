@@ -11,6 +11,7 @@ Key features:
 - Optional dynamic normalization per assignment to discourage repeated selection of the same node.
 - Returns a decisions dict compatible with Simulator._apply_decisions:
     decisions = {task_id: {'executor': <node_id or 'local'>, ...}, ...}
+- Legacy adapter: tick(world) wrapper for tests that call Strategy.tick(world).
 
 Drop-in file to replace sim/strategies/strategy_f.py (adjust namespace imports if needed).
 """
@@ -185,6 +186,82 @@ class StrategyF:
             # IMPORTANT: return a pure decisions map, no extra keys
             return decisions_map
 
+    def tick(self, world: Any) -> Dict[str, Dict[str, Any]]:
+        """
+        Legacy adapter for tests that call Strategy.tick(world).
+        Attempts to extract tasks and executors from `world` and delegates to `step`.
+        """
+        # Extract tasks from common attributes
+        tasks_src = None
+        for attr in ("tasks", "queue", "pending_tasks"):
+            if hasattr(world, attr):
+                tasks_src = getattr(world, attr)
+                break
+        if tasks_src is None:
+            tasks_src = []
+
+        # Normalize task objects to dicts with at least an 'id'
+        def to_task_dict(t) -> Dict[str, Any]:
+            if isinstance(t, dict):
+                return dict(t)
+            d: Dict[str, Any] = {}
+            # id
+            for k in ("id", "task_id", "name"):
+                if hasattr(t, k):
+                    d["id"] = getattr(t, k)
+                    break
+            # optional fields (kept for completeness; not strictly needed by StrategyF)
+            for (out_k, candidates) in [
+                ("size_kb", ("size_kb", "size", "input_size_kb")),
+                ("cycles_required", ("cycles_required", "cycles", "cpu_cycles")),
+                ("arrival_tick", ("arrival_tick", "arrival", "arrived_at")),
+                ("deadline_tick", ("deadline_tick", "deadline", "due")),
+                ("mem_required_kb", ("mem_required_kb", "mem_kb", "memory_kb")),
+                ("min_rep", ("min_rep", "min_reputation")),
+            ]:
+                for ck in candidates:
+                    if hasattr(t, ck):
+                        d[out_k] = getattr(t, ck)
+                        break
+            return d
+
+        tasks_list: List[Dict[str, Any]] = []
+        if isinstance(tasks_src, dict):
+            for t in tasks_src.values():
+                tasks_list.append(to_task_dict(t))
+        else:
+            for t in list(tasks_src):
+                tasks_list.append(to_task_dict(t))
+
+        # Build env_view with tick and executors
+        tick = getattr(world, "tick", getattr(world, "current_tick", 0))
+        executors: List[Dict[str, Any]] = []
+
+        # Try common executor pools
+        if hasattr(world, "executors"):
+            ex = getattr(world, "executors")
+            if isinstance(ex, dict):
+                executors = list(ex.values())
+            elif isinstance(ex, list):
+                executors = ex
+        else:
+            for pool in ("uavs", "edges", "fogs"):
+                if hasattr(world, pool):
+                    val = getattr(world, pool)
+                    if isinstance(val, dict):
+                        executors.extend(list(val.values()))
+                    elif isinstance(val, list):
+                        executors.extend(val)
+            if hasattr(world, "cloud") and getattr(world, "cloud"):
+                executors.append(getattr(world, "cloud"))
+
+        # Minimal local fallback if no executors are found
+        if not executors:
+            executors = [{"id": "local", "cpu_free": 1e9, "mem_free": 1e9, "bw_free": 1e9, "reputation": 1.0}]
+
+        env_view = {"tick": tick, "executors": executors}
+        return self.step(tasks_list, env_view)
+
     # ---------------------------
     # Helpers: Input normalization
     # ---------------------------
@@ -209,9 +286,9 @@ class StrategyF:
         # Fallback
         return [{'raw': tasks}]
 
+        # Produce a human-readable key for logging, similar to "tick-index"
     def _format_task_key(self, task: Dict[str, Any], idx: int, tick: Any) -> str:
         """
-        Produce a human-readable key for logging, similar to "tick-index"
         e.g., "23-2" when tick=23 and idx=2. If not available, fallback to task.id or idx.
         """
         if task.get('id'):

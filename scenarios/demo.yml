@@ -1,0 +1,75 @@
+# scenarios/demo.yml
+
+time:
+  ticks: 60
+  tick_duration_ms: 100
+
+topology:
+  ues: 20
+  uavs: 2
+  bs: 1
+  area_m: [2000, 2000]
+
+workload:
+  generator: poisson
+  rate_tasks_per_tick: 3
+  size_kb: [200, 1500]
+  cycles_per_kb: 800
+  deadline_ticks: [5, 20]
+  # اگر شهرت تسک‌ها به‌صورت حداقل نیاز باشد:
+  # مقدار ثابت یا بازه:
+  min_reputation: [0.4, 0.8]
+
+radio:
+  bw_ue_to_uav_mbps: [10, 50]
+  bw_ue_to_bs_mbps: [5, 20]
+
+energy:
+  uav_battery_j: 2.0e6
+  uav_move_j_per_m: 5.0
+  uav_compute_j_per_cycle: 1e-9
+
+# زمان‌بند/استراتژی تخصیص
+strategy: StrategyF
+config:
+  # سازگاری با شبیه‌ساز و ورودی‌ها
+  return_mode: dict
+  allow_local: true
+  flexible_step_args: true
+
+  # نرمال‌سازی واحدها
+  cpu_divisor: 1000
+  mem_divisor: 1024
+  bw_divisor: 1
+  min_unit_floor: true
+
+  # وزن‌های امتیاز و توازن بار
+  load_balance_weight: 0.55
+  score_weights:
+    cpu: 0.25
+    mem: 0.25
+    bw: 0.30
+    rep: 0.20
+
+  # مدیریت شهرت
+  min_rep_threshold: 0.40
+  rep_scale_max: 1.0
+  rep_default: 0.70
+
+  # فوریت/ددلاین
+  use_urgency: true
+  urgency_weight: 0.30
+
+  # جریمه اشباع
+  use_saturation_penalty: true
+  saturation_alpha: 0.35
+
+  # نرمال‌سازی پویا پس از هر تخصیص
+  dynamic_norm_per_assign: true
+
+  # مدل‌سازی پهنای‌باند از روی اندازه داده (اختیاری)
+  derive_bw_from_size: false
+  target_transfer_ms: 150
+
+  # لاگ
+  log_level: DEBUG

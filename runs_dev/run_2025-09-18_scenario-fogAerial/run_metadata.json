@@ -1,0 +1,89 @@
+{
+  "run_id": "run_2025-09-18_scenario-fogAerial",
+  "scenario": {
+    "name": "fogAerial",
+    "environment": "Urban canyon with intermittent NB-IoT backhaul",
+    "uav_fleet": {
+      "count": 6,
+      "models": [
+        "EdgeUAV-X7 (30 TOPS, 35 Wh)",
+        "EdgeUAV-X7 (30 TOPS, 35 Wh)",
+        "RelayUAV-R4 (5G mesh backbone)",
+        "RelayUAV-R4 (5G mesh backbone)",
+        "ScoutUAV-S2 (LiDAR + mmWave)",
+        "ChargeUAV-C1 (Solar hybrid)"
+      ]
+    }
+  },
+  "strategy": {
+    "name": "StrategyF v2 - DRL Meta Ensemble",
+    "type": "Hybrid (DRL + Meta + Graph + Game)",
+    "components": [
+      "DRL: Multi-agent PPO with partial observation (Paper 39)",
+      "Meta-RL: MAML adaptation for environment shifts (Paper 21)",
+      "GNN: Graph convolution task encoder (Paper 17)",
+      "Game: Stackelberg pricing guard (Paper 51)",
+      "Optimizer: GA fairness controller (Paper 24,57)",
+      "Resilience: Secrecy-aware link penalization (Paper 52)"
+    ]
+  },
+  "timestamp": "2025-09-18T10:42:17Z",
+  "metrics": {
+    "latency_ms": 145.7,
+    "energy_j": 872.5,
+    "sla_success_rate": 0.94
+  },
+  "artifacts": {
+    "tasks_csv": "tasks.csv",
+    "logs": [
+      "logs/strategyf_core.log",
+      "logs/environment_metrics.log",
+      "logs/validation_report.txt"
+    ]
+  },
+  "sources": {
+    "papers": [
+      {
+        "id": "P17",
+        "title": "GCN augmented DRL for dependent tasks",
+        "year": 2025,
+        "focus": "Graph-based policy"
+      },
+      {
+        "id": "P21",
+        "title": "Meta-Actor Critic for UAV-MEC",
+        "year": 2024,
+        "focus": "Meta-learning adaptation"
+      },
+      {
+        "id": "P24",
+        "title": "GA fairness-aware latency minimization",
+        "year": 2025,
+        "focus": "Fairness & GA baseline"
+      },
+      {
+        "id": "P39",
+        "title": "Partial observation learning with regret minimization",
+        "year": 2024,
+        "focus": "POMDP resilience"
+      },
+      {
+        "id": "P51",
+        "title": "Game-theoretic pricing in UAV edge",
+        "year": 2024,
+        "focus": "Economic guardrails"
+      },
+      {
+        "id": "P57",
+        "title": "Hybrid fog GA for IoD",
+        "year": 2025,
+        "focus": "Hybrid fog orchestration"
+      }
+    ],
+    "datasets": [
+      "Synthetic workload: Disaster response 12h window",
+      "City digital twin: Tehran District 7 (2025)"
+    ]
+  },
+  "notes": "Seed=872613. Controllers re-aligned every 75 epochs. Reward blending: alpha_latency=0.45, alpha_energy=0.35, alpha_sla=0.2."
+}

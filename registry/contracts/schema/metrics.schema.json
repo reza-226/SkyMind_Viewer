@@ -1,0 +1,68 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://skymind.local/registry/contracts/schema/metrics.schema.json",
+  "title": "StrategyF Metrics",
+  "type": "object",
+  "required": [
+    "_manifest_version",
+    "run_id",
+    "total_tasks",
+    "completed_tasks",
+    "mean_delay_ms",
+    "energy_consumption_j",
+    "communication_cost_j",
+    "sla_violation_rate"
+  ],
+  "properties": {
+    "_manifest_version": {
+      "type": "string",
+      "pattern": "^manifest-\\d{4}-\\d{2}-\\d{2}(?:[a-z])?$"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^StrategyF-\\d{8}T\\d{6}Z-seed\\d+$"
+    },
+    "total_tasks": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "completed_tasks": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "mean_delay_ms": {
+      "type": "number",
+      "minimum": 0
+    },
+    "energy_consumption_j": {
+      "type": "number",
+      "minimum": 0
+    },
+    "communication_cost_j": {
+      "type": "number",
+      "minimum": 0
+    },
+    "sla_violation_rate": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "notes": {
+      "type": "string"
+    },
+    "debug": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "properties": {
+        "completed_tasks": {
+          "maximum": { "$data": "1/total_tasks" }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false
+}

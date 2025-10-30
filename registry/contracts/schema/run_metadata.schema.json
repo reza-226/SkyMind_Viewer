@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RunMetadata",
+  "type": "object",
+  "required": [
+    "run_id",
+    "scenario",
+    "strategy",
+    "timestamp",
+    "metrics",
+    "artifacts",
+    "sources"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string"
+    },
+    "scenario": {
+      "type": "object",
+      "required": [
+        "name",
+        "environment",
+        "uav_fleet"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "environment": {
+          "type": "string"
+        },
+        "uav_fleet": {
+          "type": "object",
+          "required": [
+            "count",
+            "models"
+          ],
+          "properties": {
+            "count": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "models": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            }
+          }
+        }
+      }
+    },
+    "strategy": {
+      "type": "object",
+      "required": [
+        "name",
+        "type",
+        "components"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "components": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        }
+      }
+    },
+    "timestamp": {
+      "type": "string"
+    },
+    "metrics": {
+      "type": "object",
+      "required": [
+        "latency_ms",
+        "energy_j",
+        "sla_success_rate"
+      ],
+      "properties": {
+        "latency_ms": {
+          "type": "number"
+        },
+        "energy_j": {
+          "type": "number"
+        },
+        "sla_success_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "required": [
+        "tasks_csv",
+        "logs"
+      ],
+      "properties": {
+        "tasks_csv": {
+          "type": "string"
+        },
+        "logs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "sources": {
+      "type": "object",
+      "required": [
+        "papers",
+        "datasets"
+      ],
+      "properties": {
+        "papers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "title",
+              "year",
+              "focus"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "year": {
+                "type": "integer"
+              },
+              "focus": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "datasets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "notes": {
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,7 @@
+task_id,application,priority,arrival_tick,deadline_tick,estimated_cycles,estimated_energy_j,assigned_uav,placement_step
+24-0,thermal_imaging,high,24,36,1.2e9,38.4,uav-2,meta-round-3
+24-1,survivor_detection,critical,24,30,2.4e9,44.8,uav-1,meta-round-3
+24-2,route_planning,medium,24,48,0.6e9,12.2,uav-5,meta-round-4
+25-0,vision_mapping,high,25,40,1.1e9,34.7,uav-2,meta-round-3
+25-1,air_quality,medium,25,55,0.4e9,10.5,uav-6,baseline-round-1
+25-2,edge_analytics,low,25,60,0.9e9,18.3,uav-3,baseline-round-1

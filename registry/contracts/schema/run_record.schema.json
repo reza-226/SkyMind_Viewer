@@ -1,0 +1,59 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://skymind.local/registry/contracts/schema/run_record.schema.json",
+  "title": "Simulation Run Record",
+  "type": "object",
+  "required": [
+    "run_id",
+    "environment",
+    "started_at",
+    "completed_at",
+    "seed",
+    "strategy",
+    "scenario",
+    "artifact_root",
+    "status"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "pattern": "^StrategyF-\\d{8}T\\d{6}Z-seed\\d+$"
+    },
+    "environment": {
+      "type": "string",
+      "enum": ["dev", "prod"]
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "completed_at": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "seed": {
+      "type": "integer"
+    },
+    "strategy": {
+      "type": "string"
+    },
+    "scenario": {
+      "type": "string"
+    },
+    "artifact_root": {
+      "type": "string",
+      "pattern": "^runs_(dev|prod)/StrategyF-\\d{8}T\\d{6}Z-seed\\d+$"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["running", "completed", "failed", "archived"]
+    },
+    "notes": {
+      "type": "string"
+    },
+    "metrics_path": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}
